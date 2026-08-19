@@ -23,6 +23,7 @@ exactly like Assignments #3 and #7's memory files.
 
 import argparse
 import datetime
+import json
 import re
 import subprocess
 import sys
@@ -91,18 +92,55 @@ def build_pr_body(attempt: dict, review_report: str) -> str:
 
 
 def open_pr(package: str, branch: str, attempt: dict, review_report: str) -> str:
+    """Push the branch and open the PR. Prefers the `gh` CLI (used when
+    running locally, where it's authenticated). If `gh` isn't installed
+    on this machine at all (true in the Claude Code cloud sandbox, which
+    routes GitHub access through MCP tools instead of a `gh` binary),
+    falls back to writing a pr_to_create_<package>.json request file with
+    everything needed - the calling agent (which DOES have GitHub MCP
+    tool access there) is instructed to open the real PR from it. Either
+    way the checker has already made the PASS decision; this step is only
+    the mechanical act of opening the PR."""
     worktree = WORKTREES_DIR / package
     run(["git", "push", "-u", "origin", branch], cwd=worktree)
     title = f"Update {package} {attempt['current']} -> {attempt['latest']}"
     body = build_pr_body(attempt, review_report)
-    result = subprocess.run(
-        ["gh", "pr", "create", "--repo", "abubakarzohaib141/dependency-audit-loop",
-         "--base", "main", "--head", branch, "--title", title, "--body", body],
-        cwd=REPO_ROOT, capture_output=True, text=True,
-    )
+
+    # This step must NEVER raise - it's the last thing that happens in an
+    # unattended run, and a crash here would leave the run without its
+    # final progress.md entry at all. Any failure mode (binary missing,
+    # not executable, gh present but not authenticated, network error,
+    # anything else) falls through to the same JSON-fallback path rather
+    # than only handling the one failure mode tested locally.
+    try:
+        result = subprocess.run(
+            ["gh", "pr", "create", "--repo", "abubakarzohaib141/dependency-audit-loop",
+             "--base", "main", "--head", branch, "--title", title, "--body", body],
+            cwd=REPO_ROOT, capture_output=True, text=True,
+        )
+    except OSError as e:
+        print(f"  NOTE: could not invoke gh CLI ({e}).")
+        return _write_pr_request_fallback(package, branch, title, body)
+
     if result.returncode != 0:
-        raise RuntimeError(f"gh pr create failed: {result.stderr}")
+        print(f"  NOTE: gh pr create failed (exit {result.returncode}): {result.stderr.strip()[:300]}")
+        return _write_pr_request_fallback(package, branch, title, body)
+
     return result.stdout.strip().splitlines()[-1]
+
+
+def _write_pr_request_fallback(package: str, branch: str, title: str, body: str) -> str:
+    request_path = REPO_ROOT / f"pr_to_create_{package}.json"
+    request_path.write_text(
+        json.dumps({"repo": "abubakarzohaib141/dependency-audit-loop", "base": "main",
+                    "head": branch, "title": title, "body": body}, indent=2),
+        encoding="utf-8",
+    )
+    marker = f"PENDING (gh CLI unavailable here - see {request_path.name}, open via GitHub MCP tools)"
+    print(f"  NOTE: gh CLI not found in this environment. Wrote {request_path.name} "
+          f"with the PR details - open it via the GitHub MCP tools (e.g. "
+          f"mcp__github__create_pull_request) using that file's fields, then delete it.")
+    return marker
 
 
 def append_progress(entries: dict) -> None:
@@ -185,31 +223,40 @@ def main() -> int:
     for candidate in to_process:
         package = candidate["package"]
         print(f"\n--- Processing {package}: {candidate['current']} -> {candidate['latest']} ({candidate['risk']}) ---")
-        reset_candidate_worktree(package)
-        branch = create_candidate_worktree(package)
-        worktree = WORKTREES_DIR / package
-
-        attempt = maker.make_attempt(worktree, candidate)
         budget_used += 1
 
-        if not attempt.get("attempted"):
-            print(f"  maker could not attempt: {attempt.get('reason')}")
-            attempts_recorded.append({**attempt, "verdict": "FAIL", "reasons": [attempt.get("reason", "not attempted")]})
-            continue
+        # One candidate's unexpected failure must never crash the whole
+        # cycle and skip writing progress.md - it becomes a recorded FAIL
+        # with the real error, which surfaces as NEEDS_HUMAN below,
+        # exactly like a genuine checker rejection would.
+        try:
+            reset_candidate_worktree(package)
+            branch = create_candidate_worktree(package)
+            worktree = WORKTREES_DIR / package
 
-        run(["git", "add", "-A"], cwd=worktree)
-        run(["git", "commit", "-m", f"Update {package} {candidate['current']} -> {candidate['latest']}"], cwd=worktree)
+            attempt = maker.make_attempt(worktree, candidate)
 
-        verdict, report, reasons = checker.review(worktree, branch, attempt)
-        print(report)
+            if not attempt.get("attempted"):
+                print(f"  maker could not attempt: {attempt.get('reason')}")
+                attempts_recorded.append({**attempt, "verdict": "FAIL", "reasons": [attempt.get("reason", "not attempted")]})
+                continue
 
-        if verdict:
-            pr_url = open_pr(package, branch, attempt, report)
-            print(f"  PASS -> PR opened: {pr_url}")
-            attempts_recorded.append({**attempt, "verdict": "PASS", "pr_url": pr_url})
-        else:
-            print(f"  FAIL -> no PR created")
-            attempts_recorded.append({**attempt, "verdict": "FAIL", "reasons": reasons})
+            run(["git", "add", "-A"], cwd=worktree)
+            run(["git", "commit", "-m", f"Update {package} {candidate['current']} -> {candidate['latest']}"], cwd=worktree)
+
+            verdict, report, reasons = checker.review(worktree, branch, attempt)
+            print(report)
+
+            if verdict:
+                pr_url = open_pr(package, branch, attempt, report)
+                print(f"  PASS -> PR opened: {pr_url}")
+                attempts_recorded.append({**attempt, "verdict": "PASS", "pr_url": pr_url})
+            else:
+                print(f"  FAIL -> no PR created")
+                attempts_recorded.append({**attempt, "verdict": "FAIL", "reasons": reasons})
+        except Exception as e:
+            print(f"  UNEXPECTED ERROR processing {package}: {e}")
+            attempts_recorded.append({**candidate, "verdict": "FAIL", "reasons": [f"unexpected error: {e}"]})
 
     result_status = "OK"
     needs_human_reason = ""

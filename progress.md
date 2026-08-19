@@ -206,7 +206,7 @@ OK
 
 ### Attempts
 - `wcwidth`: 0.2.5 -> 0.8.2 (PASS)
-  - PR: PENDING (gh CLI unavailable here - see pr_to_create_wcwidth.json, open via GitHub MCP tools)
+  - PR: https://github.com/abubakarzohaib141/dependency-audit-loop/pull/7
 
 ### Budget
 1/1 update attempts used this run

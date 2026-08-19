@@ -116,7 +116,7 @@ OK
 
 ### Attempts
 - `colorama`: 0.4.3 -> 0.4.6 (PASS)
-  - PR: PENDING (gh CLI unavailable here - see pr_to_create_colorama.json, open via GitHub MCP tools)
+  - PR: https://github.com/abubakarzohaib141/dependency-audit-loop/pull/4 (opened via the MCP-tool fallback recovery step, since `gh` CLI was unavailable during this run)
 
 ### Budget
 1/1 update attempts used this run

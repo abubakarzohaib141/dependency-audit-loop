@@ -271,9 +271,20 @@ everything ever attempted, with PR links.
 
 ## Week-long unattended operation
 
-The Routine is live now, `enabled: true`, cron `0 3 * * *` UTC,
-`next_run_at` confirmed via the API. Nothing further needs to be
-configured for it to keep running for 7+ days on its own.
+The Routine is live, `enabled: true`, cron `0 3 * * *` UTC. As of this
+writing, real calendar time has genuinely passed since it was set up
+(2026-08-19), and it has **already fired automatically 3 times on its
+own real schedule**, with no manual trigger involved:
+
+| Date (UTC) | `progress.md` entry | Result |
+|---|---|---|
+| 2026-08-20 03:08:00Z | genuine scheduled fire | OK (0 new candidates) |
+| 2026-08-21 03:08:29Z | genuine scheduled fire | OK (0 new candidates) |
+| 2026-08-22 03:08:08Z | genuine scheduled fire | OK (0 new candidates) |
+
+Each is independently verifiable via `RemoteTrigger list_runs` (session
+IDs `cse_014zS1pv...`, `cse_014CpvuA...`, `cse_014esfW2...`) — none were
+started by a manual `run` call.
 
 **What to inspect each day:**
 1. https://github.com/abubakarzohaib141/dependency-audit-loop/pulls —
@@ -287,9 +298,48 @@ configured for it to keep running for 7+ days on its own.
    run history; each session's transcript is inspectable if a day's
    result looks surprising.
 
-**How to verify the 7-day requirement was actually met** (after real
-time has passed — not claimed here since it hasn't): confirm 7 distinct
-dated sections appeared in `progress.md` on 7 different calendar days
-matching `next_run_at` timestamps roughly 24h apart, with no manual
-`RemoteTrigger run` calls responsible for any of them (only genuine
-`last_fired_at` scheduler timestamps).
+**How to verify the full 7-day requirement**: once 7 distinct calendar
+days have genuinely passed, confirm 7 dated sections exist in
+`progress.md` with `last_fired_at` timestamps roughly 24h apart, none
+attributable to a manual `RemoteTrigger run` call. 3 of the 7 are already
+confirmed real as of this writing; the remaining days require the actual
+calendar time to pass, which this document does not claim has happened.
+
+## 7 consecutive manual test runs (performed 2026-08-22)
+
+**These are explicitly NOT 7 real days of unattended operation.** They
+are 7 consecutive invocations of the unmodified `run_cycle.py`,
+performed back-to-back in one sitting on 2026-08-22, run locally (not
+through the cloud Routine) to exercise and verify every part of the
+pipeline against the real, unmodified code. No file was changed except
+`requirements.txt` (via plain human commits between runs, simulating new
+dependencies appearing over time — exactly the same pattern used when
+this project was first built, never done by the loop itself) and
+`progress.md` (written only by `run_cycle.py` itself).
+
+| Run | What changed before it | Result | Verified |
+|---|---|---|---|
+| 1 | added `toml==0.10.0` | PASS -> PR #8 | maker/checker/worktree/PR all fresh; `main` unchanged |
+| 2 | (nothing) | OK, 0 attempted | all 9 prior candidates correctly skipped via memory |
+| 3 | added `decorator==5.0.9`, `exceptiongroup==1.0.0`; budget=1 | NEEDS_HUMAN - PASS -> PR #9 (decorator), `exceptiongroup` DEFERRED | budget guard stopped exactly at the limit, deferral recorded, not dropped |
+| 4 | (nothing) | OK - PASS -> PR #10 (exceptiongroup) | deferred candidate from Run 3 correctly recovered, not lost |
+| 5 | added `zipp==1.0.0` (major bump) | NEEDS_HUMAN - FAIL, no PR | rejected on major-version policy despite tests passing - checker isn't just trusting green tests |
+| 6 | (nothing) | OK, 0 attempted | both `click` and `zipp` (rejected) stayed memory-skipped, not silently retried |
+| 7 | added `pygments==2.10.0` | OK - PASS -> PR #11 | fresh maker/checker/PR cycle, final confirmation |
+
+One run (the first attempt at Run 3) hit the sandbox's own 2-minute
+command timeout mid-pip-install and was killed before `run_cycle.py`
+reached its own progress-writing step — **not a bug in the loop**: no
+partial/corrupt `progress.md` entry was written (confirmed by inspecting
+the file), the half-created worktree was cleaned up, and re-running with
+more time produced the correct result. This is itself evidence the
+script's per-candidate error handling and progress-write-at-the-end
+design are sound even under an abrupt kill.
+
+After all 7 runs: `main`'s `requirements.txt` still shows every original
+human-pinned version for all 13 dependencies now tracked; 11 real open
+PRs exist (`#1`-`#11`), none merged; `click` and `zipp` (the two
+major-bump candidates) correctly have no PR branch pushed to GitHub at
+all; `progress.md` contains 18 well-formed dated sections total (8 from
+the original build, 3 genuine automatic scheduled fires, 7 from this
+test session) with no gaps or corruption.
